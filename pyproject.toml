@@ -1,0 +1,23 @@
+[tool.poetry]
+name = "rinha2024"
+version = "0.1.0"
+description = ""
+authors = ["William <wosteimer1@gmail.com>"]
+readme = "README.md"
+packages = [{include = "rinha2024", from = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.12"
+starlette = "^0.37.1"
+uvicorn = "^0.27.1"
+jsonschema = "^4.21.1"
+returns = {git = "https://github.com/wosteimer/returns"}
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0.1"
+pytest-sugar = "^1.0.0"
+pytest-watch = "^4.2.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
