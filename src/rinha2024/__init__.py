@@ -1,61 +1,42 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+import asyncio
+from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import datetime, timezone
-from enum import StrEnum
+from functools import partial
 from json import JSONDecodeError
+from operator import add, sub
 from typing import TypedDict
 
 import jsonschema
 from jsonschema.exceptions import ValidationError
+from returns import Err, Ok, Result
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from .adapters.errors import ClientDoesNotExistError
+from .app.adapters.in_memory_client_repository import InMemoryClientRepository
+from .app.adapters.in_memory_transaction_repository import InMemoryTransactionRepository
+from .core.entities.client import Client
+from .core.entities.transaction import Transaction, TransactionKind
 
-class TransactionKind(StrEnum):
-    CREDIT = "c"
-    DEBIT = "d"
-
-
-@dataclass(slots=True, frozen=True)
-class Transaction:
-    value: int
-    kind: TransactionKind
-    description: str
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+clients = dict[int, int]()
+transactions = list[Transaction]()
+client_repository = InMemoryClientRepository(clients, transactions)
+transactions_repository = InMemoryTransactionRepository(clients, transactions)
 
 
-@dataclass(slots=True, frozen=True)
-class Client:
-    id: int
-    limit: int
-    transactions: tuple[Transaction] = field(default_factory=tuple)
-
-    @property
-    def balance(self) -> int:
-        return sum(
-            map(
-                lambda transaction: (
-                    transaction.value
-                    if transaction.kind == TransactionKind.CREDIT
-                    else transaction.value * -1
-                ),
-                self.transactions,
-            )
-        )
-
-    def apply_transaction(self, transaction: Transaction) -> Client:
-        return replace(self, transactions=(*self.transactions, transaction))
-
-
-REPOSITORY = dict[int, Client]()
-REPOSITORY[1] = Client(1, 100_000)
-REPOSITORY[2] = Client(2, 80_000)
-REPOSITORY[3] = Client(3, 100_000_000)
-REPOSITORY[4] = Client(4, 10_000_000)
-REPOSITORY[5] = Client(5, 500_000)
+@asynccontextmanager
+async def lifespan(_: Starlette):
+    await client_repository.create(1, 100_000)
+    await client_repository.create(2, 80_000)
+    await client_repository.create(3, 100_000_000)
+    await client_repository.create(4, 10_000_000)
+    await client_repository.create(5, 500_000)
+    yield
 
 
 class TransactionsPayload(TypedDict):
@@ -64,10 +45,8 @@ class TransactionsPayload(TypedDict):
     descricao: str
 
 
-async def transactions(request: Request):
+async def transactions_handler(request: Request):
     id: int = request.path_params["id"]
-    if id not in REPOSITORY:
-        return JSONResponse({"error": "client not found"}, status_code=404)
     try:
         schema = {
             "type": "object",
@@ -80,53 +59,84 @@ async def transactions(request: Request):
         }
         payload: TransactionsPayload = await request.json()
         jsonschema.validate(payload, schema)
-    except JSONDecodeError:
-        return JSONResponse({"error": "bad request"}, status_code=400)
-    except ValidationError:
+    except (JSONDecodeError, ValidationError):
         return JSONResponse({"error": "bad request"}, status_code=400)
 
-    client = REPOSITORY[id]
-    if (
-        payload["tipo"] == TransactionKind.DEBIT
-        and client.balance - payload["valor"] < client.limit * -1
-    ):
-        return JSONResponse({"error": "no limit"}, status_code=422)
-
-    new_client = client.apply_transaction(
-        Transaction(payload["valor"], payload["tipo"], payload["descricao"])
+    result = (await client_repository.get(id)).map(
+        partial(apply_transaction, payload=payload)
     )
-    REPOSITORY[id] = new_client
-    return JSONResponse({"limite": new_client.limit, "saldo": new_client.balance})
+    match result:
+        case Ok(client):
+            return JSONResponse({"limite": client.limit, "saldo": client.balance})
+        case Err(error):
+            match error:
+                case ClientDoesNotExistError():
+                    return JSONResponse({"error": "client not found"}, status_code=404)
+                case NoLimitError():
+                    return JSONResponse({"error": "no limit"}, status_code=422)
 
 
-async def bank_statement(request: Request):
+class NoLimitError(Exception): ...
+
+
+OPERATION_MAP = {TransactionKind.CREDIT: add, TransactionKind.DEBIT: sub}
+
+
+def apply_transaction(
+    client: Client, payload: TransactionsPayload
+) -> Result[Client, NoLimitError]:
+    operation = OPERATION_MAP[payload["tipo"]]
+    new_balance = operation(client.balance, payload["valor"])
+
+    if new_balance < client.limit * -1:
+        return Err(NoLimitError())
+
+    asyncio.create_task(
+        transactions_repository.create(
+            client_id=client.id,
+            kind=payload["tipo"],
+            description=payload["descricao"],
+            value=payload["valor"],
+        )
+    )
+
+    return Ok(replace(client, balance=new_balance))
+
+
+async def bank_statement_handler(request: Request):
     id: int = request.path_params["id"]
-    if id not in REPOSITORY:
-        return JSONResponse({"error": "client not found"}, status_code=404)
-    client = REPOSITORY[id]
-    result = {
-        "saldo": {
-            "total": client.balance,
-            "data_extrato": str(datetime.now(timezone.utc)),
-            "limite": client.limit,
-        },
-        "ultimas_transacoes": [
-            {
-                "valor": transaction.value,
-                "tipo": transaction.kind,
-                "descricao": transaction.description,
-                "realizada_em": str(transaction.created_at),
+    result = await asyncio.gather(
+        client_repository.get(id),
+        transactions_repository.get_by_client_id(id=id, amount=10),
+    )
+    match result:
+        case Ok(client), Ok(transactions):
+            json_response = {
+                "saldo": {
+                    "total": client.balance,
+                    "data_extrato": str(datetime.now(timezone.utc)),
+                    "limite": client.limit,
+                },
+                "ultimas_transacoes": [
+                    {
+                        "valor": transaction.value,
+                        "tipo": transaction.kind,
+                        "descricao": transaction.description,
+                        "realizada_em": str(transaction.created_at),
+                    }
+                    for transaction in transactions
+                ],
             }
-            for transaction in tuple(reversed(client.transactions))[0:10]
-        ],
-    }
-    return JSONResponse(result)
+            return JSONResponse(json_response)
+        case _:
+            return JSONResponse({"error": "client not found"}, status_code=404)
 
 
 app = Starlette(
     debug=True,
     routes=[
-        Route("/clientes/{id:int}/transacoes", transactions, methods=["POST"]),
-        Route("/clientes/{id:int}/extrato", bank_statement, methods=["GET"]),
+        Route("/clientes/{id:int}/transacoes", transactions_handler, methods=["POST"]),
+        Route("/clientes/{id:int}/extrato", bank_statement_handler, methods=["GET"]),
     ],
+    lifespan=lifespan,
 )
