@@ -4,6 +4,7 @@ from typing import NotRequired, Protocol, Sequence, TypedDict, Unpack
 from returns.result import Result
 
 from ..adapters.errors import ClientDoesNotExistError
+from ..core.entities.entity import Entity
 from ..core.entities.transaction import Transaction, TransactionKind
 
 
@@ -22,8 +23,8 @@ class GetByClientIdProps(TypedDict):
 
 class TransactionRepository(Protocol):
     async def create(
-        self, **props: Unpack[CreateProps]
-    ) -> Result[None, ClientDoesNotExistError]: ...
+        self, transaction: Transaction
+    ) -> Result[Entity[Transaction], ClientDoesNotExistError]: ...
     async def get_by_client_id(
         self, **props: Unpack[GetByClientIdProps]
-    ) -> Result[Sequence[Transaction], ClientDoesNotExistError]: ...
+    ) -> Result[Sequence[Entity[Transaction]], ClientDoesNotExistError]: ...

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from dataclasses import replace
 from datetime import datetime, timezone
 from functools import partial
 from json import JSONDecodeError
@@ -17,11 +16,13 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from .adapters.errors import ClientDoesNotExistError
-from .app.adapters.in_memory_client_repository import InMemoryClientRepository
-from .app.adapters.in_memory_transaction_repository import InMemoryTransactionRepository
-from .core.entities.client import Client
-from .core.entities.transaction import Transaction, TransactionKind
+from rinha2024.core.entities.entity import Entity
+
+from ..adapters.errors import ClientDoesNotExistError
+from ..core.entities.client import Client
+from ..core.entities.transaction import Transaction, TransactionKind
+from .adapters.in_memory_client_repository import InMemoryClientRepository
+from .adapters.in_memory_transaction_repository import InMemoryTransactionRepository
 
 clients = dict[int, int]()
 transactions = list[Transaction]()
@@ -31,11 +32,11 @@ transactions_repository = InMemoryTransactionRepository(clients, transactions)
 
 @asynccontextmanager
 async def lifespan(_: Starlette):
-    await client_repository.create(1, 100_000)
-    await client_repository.create(2, 80_000)
-    await client_repository.create(3, 100_000_000)
-    await client_repository.create(4, 10_000_000)
-    await client_repository.create(5, 500_000)
+    await client_repository.create(Client(100_000, 0))
+    await client_repository.create(Client(80_000, 0))
+    await client_repository.create(Client(100_000_000, 0))
+    await client_repository.create(Client(10_000_000, 0))
+    await client_repository.create(Client(500_000, 0))
     yield
 
 
@@ -43,6 +44,11 @@ class TransactionsPayload(TypedDict):
     valor: int
     tipo: TransactionKind
     descricao: str
+
+
+class TransactionsResponse(TypedDict):
+    limite: int
+    saldo: int
 
 
 async def transactions_handler(request: Request):
@@ -66,8 +72,8 @@ async def transactions_handler(request: Request):
         partial(apply_transaction, payload=payload)
     )
     match result:
-        case Ok(client):
-            return JSONResponse({"limite": client.limit, "saldo": client.balance})
+        case Ok(response):
+            return JSONResponse(response)
         case Err(error):
             match error:
                 case ClientDoesNotExistError():
@@ -83,24 +89,26 @@ OPERATION_MAP = {TransactionKind.CREDIT: add, TransactionKind.DEBIT: sub}
 
 
 def apply_transaction(
-    client: Client, payload: TransactionsPayload
-) -> Result[Client, NoLimitError]:
+    client: Entity[Client], payload: TransactionsPayload
+) -> Result[TransactionsResponse, NoLimitError]:
     operation = OPERATION_MAP[payload["tipo"]]
-    new_balance = operation(client.balance, payload["valor"])
+    new_balance = operation(client.props.balance, payload["valor"])
 
-    if new_balance < client.limit * -1:
+    if new_balance < client.props.limit * -1:
         return Err(NoLimitError())
 
     asyncio.create_task(
         transactions_repository.create(
-            client_id=client.id,
-            kind=payload["tipo"],
-            description=payload["descricao"],
-            value=payload["valor"],
+            Transaction(
+                client_id=client.id,
+                kind=payload["tipo"],
+                description=payload["descricao"],
+                value=payload["valor"],
+            )
         )
     )
 
-    return Ok(replace(client, balance=new_balance))
+    return Ok({"limite": client.props.limit, "saldo": new_balance})
 
 
 async def bank_statement_handler(request: Request):
@@ -113,16 +121,16 @@ async def bank_statement_handler(request: Request):
         case Ok(client), Ok(transactions):
             json_response = {
                 "saldo": {
-                    "total": client.balance,
+                    "total": client.props.balance,
                     "data_extrato": str(datetime.now(timezone.utc)),
-                    "limite": client.limit,
+                    "limite": client.props.limit,
                 },
                 "ultimas_transacoes": [
                     {
-                        "valor": transaction.value,
-                        "tipo": transaction.kind,
-                        "descricao": transaction.description,
-                        "realizada_em": str(transaction.created_at),
+                        "valor": transaction.props.value,
+                        "tipo": transaction.props.kind,
+                        "descricao": transaction.props.description,
+                        "realizada_em": str(transaction.props.created_at),
                     }
                     for transaction in transactions
                 ],

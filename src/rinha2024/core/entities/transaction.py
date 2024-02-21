@@ -10,7 +10,6 @@ class TransactionKind(StrEnum):
 
 @dataclass(slots=True, frozen=True)
 class Transaction:
-    id: int
     client_id: int
     value: int
     kind: TransactionKind
