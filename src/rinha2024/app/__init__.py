@@ -3,22 +3,18 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from functools import partial
 from json import JSONDecodeError
-from operator import add, sub
 from typing import TypedDict
 
 import jsonschema
 from jsonschema.exceptions import ValidationError
-from returns import Err, Ok, Result
+from returns import Err, Ok
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from rinha2024.core.entities.entity import Entity
-
-from ..adapters.errors import ClientDoesNotExistError
+from ..adapters.errors import ClientDoesNotExistError, NoLimitError
 from ..core.entities.client import Client
 from ..core.entities.transaction import Transaction, TransactionKind
 from .adapters.in_memory_client_repository import InMemoryClientRepository
@@ -68,47 +64,26 @@ async def transactions_handler(request: Request):
     except (JSONDecodeError, ValidationError):
         return JSONResponse({"error": "bad request"}, status_code=400)
 
-    result = (await client_repository.get(id)).map(
-        partial(apply_transaction, payload=payload)
+    result = await transactions_repository.create(
+        Transaction(
+            id,
+            payload["valor"],
+            payload["tipo"],
+            payload["descricao"],
+            datetime.now(timezone.utc),
+        )
     )
     match result:
-        case Ok(response):
-            return JSONResponse(response)
+        case Ok(client):
+            return JSONResponse(
+                {"limite": client.props.limit, "saldo": client.props.balance}
+            )
         case Err(error):
             match error:
                 case ClientDoesNotExistError():
                     return JSONResponse({"error": "client not found"}, status_code=404)
                 case NoLimitError():
                     return JSONResponse({"error": "no limit"}, status_code=422)
-
-
-class NoLimitError(Exception): ...
-
-
-OPERATION_MAP = {TransactionKind.CREDIT: add, TransactionKind.DEBIT: sub}
-
-
-def apply_transaction(
-    client: Entity[Client], payload: TransactionsPayload
-) -> Result[TransactionsResponse, NoLimitError]:
-    operation = OPERATION_MAP[payload["tipo"]]
-    new_balance = operation(client.props.balance, payload["valor"])
-
-    if new_balance < client.props.limit * -1:
-        return Err(NoLimitError())
-
-    asyncio.create_task(
-        transactions_repository.create(
-            Transaction(
-                client_id=client.id,
-                kind=payload["tipo"],
-                description=payload["descricao"],
-                value=payload["valor"],
-            )
-        )
-    )
-
-    return Ok({"limite": client.props.limit, "saldo": new_balance})
 
 
 async def bank_statement_handler(request: Request):

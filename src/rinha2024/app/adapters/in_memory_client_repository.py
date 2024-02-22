@@ -4,7 +4,7 @@ from itertools import count
 from returns import Err, Ok, Result
 
 from ...adapters.client_repository import ClientRepository
-from ...adapters.errors import ClientAlreadyExists, ClientDoesNotExistError
+from ...adapters.errors import ClientDoesNotExistError
 from ...core.entities.client import Client
 from ...core.entities.entity import Entity
 from ...core.entities.transaction import Transaction, TransactionKind
@@ -19,15 +19,11 @@ class InMemoryClientRepository(ClientRepository):
         self.__clients = clients
         self.__transactions = transactions
 
-    async def create(
-        self, client: Client
-    ) -> Result[Entity[Client], ClientAlreadyExists]:
+    async def create(self, client: Client) -> Entity[Client]:
         id = next(self.__next_id)
-        if await self.exists(id):
-            return Err(ClientAlreadyExists())
 
         self.__clients[id] = client.limit
-        return Ok(Entity(Client(client.limit, self.__get_balance(id)), id))
+        return Entity(Client(client.limit, self.__get_balance(id)), id)
 
     async def get(self, id: int) -> Result[Entity[Client], ClientDoesNotExistError]:
         if not await self.exists(id):
