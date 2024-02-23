@@ -6,34 +6,47 @@ from datetime import datetime, timezone
 from json import JSONDecodeError
 from typing import TypedDict
 
+import asyncpg
 import jsonschema
 from jsonschema.exceptions import ValidationError
 from returns import Err, Ok
 from starlette.applications import Starlette
+from starlette.config import Config
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from ..adapters.client_repository import ClientRepository
 from ..adapters.errors import ClientDoesNotExistError, NoLimitError
-from ..core.entities.client import Client
+from ..adapters.transaction_repository import TransactionRepository
+from ..app.adapters.postgres_client_repository import PostgresClientRepository
+from ..app.adapters.postgres_transaction_repository import PostgresTransactionRepository
 from ..core.entities.transaction import Transaction, TransactionKind
-from .adapters.in_memory_client_repository import InMemoryClientRepository
-from .adapters.in_memory_transaction_repository import InMemoryTransactionRepository
 
-clients = dict[int, int]()
-transactions = list[Transaction]()
-client_repository = InMemoryClientRepository(clients, transactions)
-transactions_repository = InMemoryTransactionRepository(clients, transactions)
+config = Config(".env")
+DEBUG = config("DEBUG", cast=bool, default=False)
+POSTGRES_HOST = config("POSTGRES_HOST")
+POSTGRES_PORT = config("POSTGRES_PORT", cast=int)
+POSTGRES_DB = config("POSTGRES_DB")
+POSTGRES_USER = config("POSTGRES_USER")
+POSTGRES_PASSWORD = config("POSTGRES_PASSWORD")
 
 
 @asynccontextmanager
 async def lifespan(_: Starlette):
-    await client_repository.create(Client(100_000, 0))
-    await client_repository.create(Client(80_000, 0))
-    await client_repository.create(Client(100_000_000, 0))
-    await client_repository.create(Client(10_000_000, 0))
-    await client_repository.create(Client(500_000, 0))
-    yield
+    async with asyncpg.create_pool(
+        host=POSTGRES_HOST,
+        port=POSTGRES_PORT,
+        database=POSTGRES_DB,
+        user=POSTGRES_USER,
+        password=POSTGRES_PASSWORD,
+    ) as pool:
+        client_repository = PostgresClientRepository(pool)
+        transaction_repository = PostgresTransactionRepository(pool)
+        yield {
+            "client_repository": client_repository,
+            "transaction_repository": transaction_repository,
+        }
 
 
 class TransactionsPayload(TypedDict):
@@ -64,7 +77,9 @@ async def transactions_handler(request: Request):
     except (JSONDecodeError, ValidationError):
         return JSONResponse({"error": "bad request"}, status_code=400)
 
-    result = await transactions_repository.create(
+    transaction_repository: TransactionRepository = request.state.transaction_repository
+
+    result = await transaction_repository.create(
         Transaction(
             id,
             payload["valor"],
@@ -88,9 +103,11 @@ async def transactions_handler(request: Request):
 
 async def bank_statement_handler(request: Request):
     id: int = request.path_params["id"]
+    transaction_repository: TransactionRepository = request.state.transaction_repository
+    client_repository: ClientRepository = request.state.client_repository
     result = await asyncio.gather(
         client_repository.get(id),
-        transactions_repository.get_by_client_id(id=id, amount=10),
+        transaction_repository.get_by_client_id(id=id, amount=10),
     )
     match result:
         case Ok(client), Ok(transactions):
@@ -116,7 +133,7 @@ async def bank_statement_handler(request: Request):
 
 
 app = Starlette(
-    debug=True,
+    debug=DEBUG,
     routes=[
         Route("/clientes/{id:int}/transacoes", transactions_handler, methods=["POST"]),
         Route("/clientes/{id:int}/extrato", bank_statement_handler, methods=["GET"]),
