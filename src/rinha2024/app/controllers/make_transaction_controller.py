@@ -35,7 +35,7 @@ class MakeTransactionController:
             payload: Payload = await request.json()
             jsonschema.validate(payload, schema)
         except (JSONDecodeError, ValidationError):
-            return JSONResponse({"error": "bad request"}, status_code=400)
+            return JSONResponse({"error": "bad request"}, status_code=422)
 
         transaction_repository: TransactionRepository = (
             request.state.transaction_repository
