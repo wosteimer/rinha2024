@@ -1,5 +1,6 @@
+from collections.abc import AsyncIterable
 from datetime import datetime
-from typing import NotRequired, Protocol, Sequence, TypedDict, Unpack
+from typing import AsyncContextManager, NotRequired, Protocol, TypedDict, Unpack
 
 from returns.result import Result
 
@@ -19,6 +20,8 @@ class TransactionRepository(Protocol):
     async def create(
         self, transaction: Transaction
     ) -> Result[Entity[Client], ClientDoesNotExistError | NoLimitError]: ...
-    async def get_by_client_id(
+    def get_by_client_id(
         self, **props: Unpack[GetByClientIdProps]
-    ) -> Result[Sequence[Entity[Transaction]], ClientDoesNotExistError]: ...
+    ) -> AsyncContextManager[
+        Result[AsyncIterable[Entity[Transaction]], ClientDoesNotExistError]
+    ]: ...

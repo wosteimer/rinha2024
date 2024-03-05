@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import asyncpg
 from starlette.applications import Starlette
@@ -9,10 +10,12 @@ from starlette.routing import Route
 
 from .adapters.postgres_client_repository import PostgresClientRepository
 from .adapters.postgres_transaction_repository import PostgresTransactionRepository
-from .controllers.get_bank_statement_controller import GetBankStatementController
-from .controllers.make_transaction_controller import MakeTransactionController
+from .controllers.get_bank_statement_controller import get_bank_statement_controller
+from .controllers.make_transaction_controller import make_transaction_controller
 
-config = Config(".env")
+ENV_PATH = Path(".env")
+config = Config(ENV_PATH if ENV_PATH.exists() else None)
+
 DEBUG = config("DEBUG", cast=bool, default=False)
 POSTGRES_HOST = config("POSTGRES_HOST")
 POSTGRES_PORT = config("POSTGRES_PORT", cast=int)
@@ -24,6 +27,8 @@ POSTGRES_PASSWORD = config("POSTGRES_PASSWORD")
 @asynccontextmanager
 async def lifespan(_: Starlette):
     async with asyncpg.create_pool(
+        max_size=25,
+        max_inactive_connection_lifetime=0,
         host=POSTGRES_HOST,
         port=POSTGRES_PORT,
         database=POSTGRES_DB,
@@ -38,20 +43,17 @@ async def lifespan(_: Starlette):
         }
 
 
-make_transaction_controller = MakeTransactionController()
-get_bank_statement_controller = GetBankStatementController()
-
 app = Starlette(
     debug=DEBUG,
     routes=[
         Route(
             "/clientes/{id:int}/transacoes",
-            make_transaction_controller.handle,
+            make_transaction_controller,
             methods=["POST"],
         ),
         Route(
             "/clientes/{id:int}/extrato",
-            get_bank_statement_controller.handle,
+            get_bank_statement_controller,
             methods=["GET"],
         ),
     ],

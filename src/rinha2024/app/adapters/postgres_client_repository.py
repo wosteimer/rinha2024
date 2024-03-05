@@ -17,26 +17,24 @@ class PostgresClientRepository(ClientRepository):
 
     async def create(self, client: Client) -> Entity[Client]:
         async with self.__pool.acquire() as connection:
-            id: int = await connection.fetchval(
+            create_client_prepare = await connection.prepare(
                 """INSERT INTO Client(limit_value, balance)\n"""
                 """VALUES($1, 0);\n"""
                 """RETURNING id""",
-                client.limit,
             )
+            id: int = await create_client_prepare.fetchval(client.limit)
         return Entity(Client(client.limit, 0), id)
 
     async def get(self, id: int) -> Result[Entity[Client], ClientDoesNotExistError]:
         async with self.__pool.acquire() as connection:
-            result = await connection.fetchrow(
+            get_client_prepare = await connection.prepare(
                 "SELECT id, limit_value AS limit, balance FROM Client WHERE id = $1;\n",
-                id,
             )
+            record = await get_client_prepare.fetchrow(id)
 
-            if not result:
+            if not record:
                 return Err(ClientDoesNotExistError())
-            result_to_dict = dict(result)
-            client_id = result_to_dict.pop("id")
-            return Ok(Entity(Client(**result_to_dict), client_id))
+            return Ok(Entity(Client(record["limit"], record["balance"]), record["id"]))
 
     async def get_all(self) -> Sequence[Entity[Client]]:
         async with self.__pool.acquire() as connection:

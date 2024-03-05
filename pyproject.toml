@@ -10,15 +10,18 @@ packages = [{include = "rinha2024", from = "src"}]
 python = "^3.12"
 starlette = "^0.37.1"
 uvicorn = "^0.27.1"
-jsonschema = "^4.21.1"
 returns = {git = "https://github.com/wosteimer/returns"}
 asyncpg = "^0.29.0"
 asyncpg-stubs = "^0.29.1"
+uvloop = "^0.19.0"
+httptools = "^0.6.1"
+orjson = "^3.9.15"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0.1"
 pytest-sugar = "^1.0.0"
 pytest-watch = "^4.2.0"
+yappi = "^1.6.0"
 
 [build-system]
 requires = ["poetry-core"]
